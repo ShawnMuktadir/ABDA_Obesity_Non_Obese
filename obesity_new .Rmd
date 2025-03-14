@@ -1,0 +1,966 @@
+```{r}
+library(dplyr)
+library(tidyr)
+library(DT)
+library(forcats)
+library(fastDummies)
+library(corrplot)
+library(brms)
+library(tidyverse)
+library(bayesplot)
+library(plotly)
+library(loo)
+library(ggplot2)
+options(mc.cores = parallel::detectCores())
+```
+
+
+```{r}
+new_data <- read.csv("Nutrition_Physical_Activity_and_Obesity.csv")
+head(new_data)
+```
+
+```{r}
+# Check how many NA values each column has
+colSums(is.na(new_data))  
+
+```
+
+
+```{r}
+#Remove Irrelevant Columns
+# Data_Value_Alt is duplicate with Data_Value
+
+processed_data_1 <- new_data %>%
+  select(-YearStart, -YearEnd, -Data_Value_Unit, -Data_Value_Footnote, -Data_Value_Type, -DataValueTypeID, -Total, -Data_Value_Alt, -Sample_Size, -LocationAbbr, -Datasource, -Class, -Topic,-Data_Value_Footnote_Symbol, -ClassID, -TopicID, -GeoLocation, -LocationID, -StratificationCategory1, -Stratification1, -StratificationCategoryId1, -StratificationID1) 
+head(processed_data_1)
+
+```
+
+```{r}
+head(new_data)
+```
+
+
+
+```{r}
+#Remove Columns That Contain Only NA
+processed_data_1 <- processed_data_1 %>%
+  select(where(~ any(!is.na(.))))
+
+head(processed_data_1)
+
+```
+
+
+
+```{r}
+# Check how many NA values each column has
+
+colSums(is.na(processed_data_1))
+
+```
+
+
+
+
+
+```{r}
+
+
+```
+
+```{r}
+head(processed_data_1)
+
+```
+
+```{r}
+
+
+```
+
+```{r}
+# Merges LocationDesc, QuestionID, and Data_Value into a single formatted column.
+
+# 1️⃣ Group and Transform: `LocationDesc` as rows, `QuestionID` as columns
+processed_data_2 <- processed_data_1 %>%
+  group_by(LocationDesc, QuestionID) %>%
+  summarise(Assigned_Value = first(na.omit(Data_Value)), .groups = "drop")
+
+final_data <- processed_data_2 %>%
+  pivot_wider(names_from = QuestionID, values_from = Assigned_Value)
+
+# 2️⃣ Merge `final_data` with the original `processed_data_1`
+merged_data <- processed_data_1 %>%
+  left_join(final_data, by = "LocationDesc")  # Merging based on LocationDesc
+
+# Remove QuestionID, Question, and Data_Value
+working_data <- merged_data %>%
+  select(-c(QuestionID, Question, Data_Value))
+
+write.csv(working_data, "merged_data.csv", row.names = FALSE)
+
+
+```
+
+
+```{r}
+# Step 1 → Extracts character columns separately (char_data).
+# Step 2 → Filters numeric columns (numeric_data).
+
+# 1️⃣ Separate Character and Numeric Columns
+char_data <- working_data %>%
+  select(where(is.character))
+
+numeric_data <- working_data %>%
+  select(where(is.numeric))
+
+# 2️⃣ Convert Character Data to Numeric (Choose One Method)
+## Factor Encoding
+char_data_encoded <- char_data %>%
+  mutate(across(where(is.character), ~ as.numeric(as.factor(.))))
+
+## OR One-Hot Encoding (Choose One)
+# char_data_encoded <- dummy_cols(char_data, remove_first_dummy = TRUE, remove_selected_columns = TRUE)
+
+# 3️⃣ Remove Zero-Variance Numeric Columns
+zero_var_cols <- sapply(numeric_data, function(x) var(x, na.rm = TRUE) == 0)
+final_numeric_data <- numeric_data[, !zero_var_cols]
+
+# 4️⃣ Scale Numeric Data
+data_scaled <- scale(final_numeric_data)
+
+# 5️⃣ Convert Scaled Data to Data Frame
+data_scaled <- as.data.frame(data_scaled)
+
+# 6️⃣ Merge Scaled Numeric Data with Encoded Categorical Data
+final_data <- cbind(char_data_encoded, data_scaled)
+
+# 7️⃣ Print the Final Processed Dataset
+head(final_data)
+
+
+```
+
+
+```{r}
+head(final_data)
+```
+
+
+```{r}
+
+#Implement k-means clustering
+
+# 1️⃣ Ensure `final_data` is a DataFrame (not a list)
+if (!is.data.frame(final_data)) {
+  final_data <- as.data.frame(final_data)
+}
+
+# 2️⃣ Separate Numeric and Categorical Columns
+char_data <- final_data %>% select(where(is.character))  # Store categorical columns
+numeric_data <- final_data %>% select(where(is.numeric))  # Store numeric columns
+
+# 3️⃣ Check for Missing, NaN, and Infinite Values
+print(paste("Total NA values:", sum(is.na(numeric_data))))
+print(paste("Total NaN values:", sum(is.nan(as.matrix(numeric_data)))))
+print(paste("Total Infinite values:", sum(is.infinite(as.matrix(numeric_data)))))
+
+# 4️⃣ Handle Invalid Values (Replace with 0)
+numeric_data[is.na(numeric_data)] <- 0
+numeric_data[is.nan(as.matrix(numeric_data))] <- 0
+numeric_data[is.infinite(as.matrix(numeric_data))] <- 0
+
+# 5️⃣ Scale Numeric Data
+data_scaled <- scale(numeric_data)
+data_scaled <- as.data.frame(data_scaled)  # Convert matrix back to dataframe
+
+# 6️⃣ Perform K-Means Clustering (k=2)
+set.seed(123)  # For reproducibility
+kmeans_result <- kmeans(data_scaled, centers = 2, nstart = 25)
+
+# 7️⃣ Assign Cluster Labels to `final_data`
+final_data$Cluster <- as.factor(kmeans_result$cluster)  # Convert clusters to factor
+
+# 8️⃣ Assign `obese` Labels Based on Clusters
+final_data$obese <- ifelse(kmeans_result$cluster == 1, 0, 1)
+
+# 9️⃣ Save the Final Dataset with Clusters and Obesity Labels
+write.csv(final_data, "data_with_cluster.csv", row.names = FALSE)
+
+# 🔹 Print Cluster Summary
+print(table(final_data$Cluster))
+
+# 🔹 Optional: Visualize Clusters (Only if at least 2 numeric features exist)
+if (ncol(data_scaled) >= 2) {
+  ggplot(final_data, aes(x = data_scaled[,1], y = data_scaled[,2], color = Cluster)) +
+    geom_point(size = 3) +
+    labs(title = "K-Means Clustering (k=2)", x = colnames(data_scaled)[1], y = colnames(data_scaled)[2]) +
+    theme_minimal()
+}
+
+```
+
+```{r}
+# Ensures final_data is properly formatted before processing
+
+
+# 1️⃣ Ensure `final_data` is a DataFrame (not a list)
+if (!is.data.frame(final_data)) {
+  final_data <- as.data.frame(final_data)
+}
+
+# 2️⃣ Identify Column Types (Check if Numeric Columns are Stored as Characters)
+str(final_data)  # Print column data types
+
+# 3️⃣ Convert All Numeric-Like Columns to Proper Numeric Format
+final_data <- final_data %>%
+  mutate(across(where(is.character), ~ suppressWarnings(as.numeric(.)), .names = "cleaned_{.col}"))
+
+# 4️⃣ Check for NA Introduced During Conversion (If Any Were Text Previously)
+print(sum(is.na(final_data)))
+
+# 5️⃣ Save the Cleaned Data to a CSV File (Ensuring No Quotes Around Numbers)
+write.csv(final_data, "cleaned_final_data.csv", row.names = FALSE, quote = FALSE)
+
+# 6️⃣ Print First Few Rows to Verify
+head(final_data)
+
+
+```
+
+
+
+```{r}
+# 1️⃣ Ensure `final_data` is a DataFrame
+if (!is.data.frame(final_data)) {
+  final_data <- as.data.frame(final_data)
+}
+
+# 2️⃣ Select Only Numeric Columns
+numeric_data <- final_data %>%
+  select(where(is.numeric))
+
+# 3️⃣ Compute Correlation Matrix (Handling Missing Values)
+cor_matrix <- cor(numeric_data, use = "complete.obs")
+
+# 4️⃣ Visualize the Correlation Matrix (Remove `expand`)
+corrplot(cor_matrix, method = "color", type = "upper", order = "hclust",
+         tl.col = "black", tl.srt = 45,
+         addCoef.col = "black",  # Add correlation coefficients
+         number.cex = 0.7,       # Adjust size of the correlation coefficients
+         tl.cex = 0.6,           # Adjust size of the variable labels
+         cl.cex = 0.7,           # Adjust size of the color legend text
+         diag = FALSE,           # Hide diagonal
+         mar = c(1, 1, 1, 1))    # Reduce margin sizes if necessary
+
+# 5️⃣ Save the Correlation Matrix as an Image (Remove `expand`)
+png("shawn_matrix.png", width = 1200, height = 1200)
+corrplot(cor_matrix, method = "color", type = "upper", order = "hclust",
+         tl.col = "black", tl.srt = 45,          # Adjust label color and angle
+         addCoef.col = "black", number.cex = 1,  # Increase correlation coefficient size
+         tl.cex = 1.2, cl.cex = 1.2,             # Increase text and legend size
+         mar = c(3, 3, 3, 3),                    # Increase margin for wider boxes
+         is.corr = TRUE)
+dev.off()
+
+
+```
+
+```{r}
+#load our final data
+head(final_data)
+```
+
+```{r}
+names(final_data)[grep("^Q0", names(final_data))]
+
+```
+
+
+```{r}
+#Remove NA values
+cleaned_data <- na.omit(final_data)
+
+# Print the first few rows to verify
+head(cleaned_data)
+
+# Save the cleaned dataset
+write.csv(cleaned_data, "hcleaned_data.csv", row.names = FALSE)
+```
+
+```{r}
+table(cleaned_data$obese)
+```
+
+
+```{r}
+library(caret)
+```
+
+
+```{r}
+# Define proportion of data to keep (e.g., 10%)
+sample_fraction <- 0.1  
+
+# Step 1: Get row indices for stratified sampling
+sample_indices <- createDataPartition(cleaned_data$obese, p = sample_fraction, list = FALSE)
+
+# Step 2: Subset the dataset using the indices
+subdataset <- cleaned_data[sample_indices, ]  
+
+# Step 3: Check class distribution
+table(subdataset$obese) 
+```
+
+```{r}
+library(cmdstanr)
+```
+
+```{r}
+table(subdataset$obese)
+```
+
+
+```{r}
+subdataset <- createDataPartition(cleaned_data$obese, p = 0.1, list = FALSE)
+
+stratified_subset <- cleaned_data[subdataset,]
+table(stratified_subset$obese)
+```
+
+```{r}
+head(stratified_subset)
+```
+
+```{r}
+# Identify numeric columns
+numeric_cols <- cleaned_data %>% select(where(is.numeric)) %>% names()
+
+# Standardize numeric columns
+standarized_stratified_subset <- cleaned_data %>%
+  mutate(across(all_of(numeric_cols), ~ scale(.) %>% as.numeric()))
+
+write.csv(standarized_stratified_subset, "standarized_stratified_subset.csv", row.names = FALSE)
+
+```
+
+
+```{r}
+table(stratified_subset$LocationDesc)
+```
+
+
+```{r}
+standarized_stratified_data <- read.csv("stratified_subset.csv")
+head(standarized_stratified_data)
+```
+
+Logistic Regression
+
+```{r}
+formula1 = obese ~ LocationDesc + Low_Confidence_Limit + High_Confidence_Limit +  Age.years. + Education + Gender + Income + Race.Ethnicity + Q018 + Q019 + Q036 + Q037 + Q043 + Q044 + Q045 + Q046 + Q047
+
+prior1 <- set_prior("normal(0, 1)", class = "b")
+```
+
+```{r}
+# using standarized_stratified_data as dataset
+ #fit_model1 <- brm(
+  # formula = formula1,
+   #data = standarized_stratified_data,
+   #family = bernoulli(link = "logit"),
+   #prior = prior1,
+   #chains = 4, iter = 4000, warmup = 2000, cores = 4
+ #)
+```
+
+```{r}
+# using standarized_stratified_data as dataset
+ fit_model1 <- brm(
+   formula = formula1,
+   data = stratified_subset,
+   family = bernoulli(link = "logit"),
+   prior = prior1,
+   chains = 4, iter = 4000, warmup = 2000, cores = 4
+ )
+```
+
+```{r}
+summary(fit_model1)
+```
+
+
+```{r}
+saveRDS(fit_model1, file = "fit_model1.rds")
+```
+
+
+```{r}
+model1 <- readRDS("fit_model1.rds")
+summary(model1)
+```
+
+
+
+```{r}
+formula2 = obese ~ LocationDesc + Low_Confidence_Limit + High_Confidence_Limit + Income + Q018 + Q019 + Q036 + Q037 + Q043 + Q044 + Q045 + Q046 + Q047
+
+prior1 <- set_prior("normal(0, 1)", class = "b")
+```
+
+```{r}
+ fit_model2 <- brm(
+   formula = formula2,
+   data = stratified_subset,
+   family = bernoulli(link = "logit"),
+   prior = prior1,
+   chains = 4, iter = 2000, warmup = 1000, cores = 4
+ )
+```
+
+```{r}
+saveRDS(fit_model2, file = "fit_model2.rds")
+```
+
+
+```{r}
+model2 <- readRDS("fit_model2.rds")
+summary(model2)
+```
+
+
+```{r}
+#Check number of rows (observations) and columns (predictors)
+dim(final_data)
+```
+
+```{r}
+##To Summarize posterior means, credible intervals, and diagnostics like R-hat
+
+mcmc_plot(model1, type = "rhat")
+
+mcmc_plot(model1, type = "neff")
+```
+
+```{r}
+# Density Plot for All Parameters of model 1
+
+# Extract posterior samples
+posterior_samples_model1 <- as.array(model1)
+
+# Demographics
+mcmc_dens_overlay(posterior_samples_model1, pars = c("b_Age.years.", "b_Education", "b_Gender", "b_Income", "b_Race.Ethnicity"))
+
+# Confidence Limits
+mcmc_dens_overlay(posterior_samples_model1, pars = c("b_Low_Confidence_Limit", "b_High_Confidence_Limit"))
+
+# Survey Questions
+mcmc_dens_overlay(posterior_samples_model1, regex_pars = "b_Q")
+
+```
+
+```{r}
+# Load required libraries
+library(bayesplot)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Extract posterior samples for Model 1
+posterior_samples_model1 <- as.array(model1)
+
+# Convert posterior samples into a data frame
+posterior_df_model1 <- as.data.frame(as_draws_df(model1))
+
+# ------------------- DENSITY PLOTS FOR EACH GROUP -------------------
+
+## 1️⃣ Demographics
+demographic_params <- c("b_Age.years.", "b_Education", "b_Gender", "b_Income", "b_Race.Ethnicity")
+demographic_long <- posterior_df_model1 %>%
+  dplyr::select(all_of(demographic_params)) %>%
+  tidyr::gather(key = "Parameter", value = "Value")
+
+demographic_plot <- ggplot(demographic_long, aes(x = Value)) +
+  geom_density(fill = "steelblue", alpha = 0.7) +
+  facet_wrap(~ Parameter, scales = "free", ncol = 3) +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(),  
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank()) +
+  labs(title = "Density Plots for Demographics")
+
+## 2️⃣ Confidence Limits
+confidence_params <- c("b_Low_Confidence_Limit", "b_High_Confidence_Limit")
+confidence_long <- posterior_df_model1 %>%
+  dplyr::select(all_of(confidence_params)) %>%
+  tidyr::gather(key = "Parameter", value = "Value")
+
+confidence_plot <- ggplot(confidence_long, aes(x = Value)) +
+  geom_density(fill = "steelblue", alpha = 0.7) +
+  facet_wrap(~ Parameter, scales = "free", ncol = 3) +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank()) +
+  labs(title = "Density Plots for Confidence Limits")
+
+## 3️⃣ Survey Questions
+survey_params <- grep("b_Q", names(posterior_df_model1), value = TRUE)  # Selects all "b_Q*" variables
+survey_long <- posterior_df_model1 %>%
+  dplyr::select(all_of(survey_params)) %>%
+  tidyr::gather(key = "Parameter", value = "Value")
+
+survey_plot <- ggplot(survey_long, aes(x = Value)) +
+  geom_density(fill = "steelblue", alpha = 0.7) +
+  facet_wrap(~ Parameter, scales = "free", ncol = 3) +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank()) +
+  labs(title = "Density Plots for Survey Questions")
+
+# ------------------- DISPLAY ALL PLOTS -------------------
+print(demographic_plot)
+print(confidence_plot)
+print(survey_plot)
+
+```
+
+
+
+```{r}
+# Trace Plot for All Parameters of model 1
+
+# Demographics
+mcmc_trace(posterior_samples_model1, pars = c("b_Age.years.", "b_Education", "b_Gender", "b_Income", "b_Race.Ethnicity"))
+
+# Confidence Limits
+mcmc_trace(posterior_samples_model1, pars = c("b_Low_Confidence_Limit", "b_High_Confidence_Limit"))
+
+# Survey Questions
+mcmc_trace(posterior_samples_model1, regex_pars = "b_Q")
+
+```
+
+
+```{r}
+# Generate posterior predictive samples
+pp_check(model1)
+pp_check(model1, type = "bars")
+```
+
+```{r}
+## Show how predictors influence the response variable, accounting for random effects.
+# Plot marginal effects of predictors
+ce <- conditional_effects(model1, method = "posterior_epred")
+plot(ce, points = TRUE)
+
+```
+
+```{r}
+## Histogram of predicted responses
+pp_check(model1, type = "hist")
+
+pp_check(model1, type = "hist") +
+  geom_histogram(binwidth = 0.05) +
+  theme_minimal() +
+  theme(axis.text = element_text(size = 8))
+```
+
+
+```{r}
+
+
+```
+
+```{r}
+# 1️⃣ Define Hierarchical Model Formula
+hierarchical_formula1 <- bf(
+  obese ~ Low_Confidence_Limit + High_Confidence_Limit + 
+    Q018 + Q019 + Q036 + Q037 + Q043 + Q044 + Q045 + Q046 + Q047 + 
+    Age.years. + Education + Gender + Income + Race.Ethnicity + 
+    (1 | LocationDesc)  # Hierarchical Random Effect: Each location has a different obesity rate
+)
+
+# 2️⃣ Set Priors for Bayesian Model
+prior_hierarchical1 <- c(
+  set_prior("normal(0, 2)", class = "b"),         # Slightly wider prior for fixed effects
+  set_prior("normal(0, 5)", class = "Intercept"), # More flexible intercept prior
+  set_prior("cauchy(0, 2)", class = "sd")         # Slightly broader random effects prior
+)
+
+```
+
+```{r}
+# Fit the Bayesian Hierarchical Model
+hierarchical_model1 <- brm(
+  formula = hierarchical_formula1,
+  data = stratified_subset,
+  family = bernoulli(link = "logit"),
+  prior = prior_hierarchical1,
+  chains = 4, iter = 4000, warmup = 2000, cores = 4,
+)
+```
+
+
+```{r}
+# Model Summary
+summary(hierarchical_model1)
+```
+
+```{r}
+# 8️⃣ Save Model for Future Use
+saveRDS(hierarchical_model1, "hierarchical_model1.rds")
+```
+
+
+```{r, warning=FALSE}
+model3 <- readRDS("hierarchical_model1.rds")
+summary(model3)
+```
+
+
+```{r}
+# 1️⃣ Define Hierarchical Model Formula
+hierarchical_formula2 <- bf(
+  obese ~ Low_Confidence_Limit + High_Confidence_Limit + 
+    Age.years. + Education + Gender + Income + Race.Ethnicity + 
+    (1 + Q018 + Q019 + Q036 + Q037 + Q043 + Q044 + Q045 + Q046 + Q047 | LocationDesc)
+)
+
+# 2️⃣ Set Priors for the Bayesian Model
+prior_hierarchical2 <- c(
+  set_prior("normal(0, 2)", class = "b"),         # Slightly wider prior for fixed effects
+  set_prior("normal(0, 5)", class = "Intercept"), # More flexible intercept prior
+  set_prior("cauchy(0, 2)", class = "sd")         # Slightly broader random effects prior
+)
+
+```
+
+
+```{r}
+# 3️⃣ Fit the Bayesian Hierarchical Model
+hierarchical_model2 <- brm(
+  formula = hierarchical_formula2,
+  data = standarized_stratified_data,
+  family = bernoulli(link = "logit"),
+  prior = prior_hierarchical2,
+  chains = 4, iter = 2000, warmup = 1000, cores = 4,
+  #backend = "cmdstanr" 
+)
+
+
+```
+
+
+```{r}
+# 4️⃣ Model Summary
+summary(hierarchical_model2)
+```
+
+```{r}
+# 8️⃣ Save Model for Future Use
+saveRDS(hierarchical_model2, "hierarchical_model2.rds")
+```
+
+
+```{r}
+model4 <- readRDS("hierarchical_model2.rds")
+summary(model4)
+```
+
+```{r}
+model5 <- readRDS("hier_model_10percdata.rds")
+summary(model5)
+
+```
+
+```{r}
+# Generate posterior predictive samples for model3
+pp_check(model3)
+pp_check(model3, type = "bars")
+```
+
+
+```{r}
+##To Summarize posterior means, credible intervals, and diagnostics like R-hat
+
+mcmc_plot(model3, type = "rhat")
+
+mcmc_plot(model3, type = "neff")
+```
+
+```{r}
+# Density Plots for Each Group of model3
+
+posterior_samples <- as.array(model3)
+
+# Demographics
+mcmc_dens_overlay(posterior_samples, pars = c("b_Age.years.", "b_Education", "b_Gender", "b_Income", "b_Race.Ethnicity"))
+
+# Confidence Limits
+mcmc_dens_overlay(posterior_samples, pars = c("b_Low_Confidence_Limit", "b_High_Confidence_Limit"))
+
+# Survey Responses
+mcmc_dens_overlay(posterior_samples, regex_pars = "b_Q")  # Uses regex to match Q-related variables
+
+```
+
+```{r}
+# Load required libraries
+library(bayesplot)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+
+# Extract posterior samples for model3
+posterior_samples <- as.array(model3)
+
+# Convert posterior samples into a data frame
+posterior_df <- as.data.frame(as_draws_df(model3))
+
+# ------------------- DENSITY PLOTS FOR EACH GROUP -------------------
+
+## 1️⃣ Demographics
+demographic_params <- c("b_Age.years.", "b_Education", "b_Gender", "b_Income", "b_Race.Ethnicity")
+demographic_long <- posterior_df %>%
+  dplyr::select(all_of(demographic_params)) %>%
+  tidyr::gather(key = "Parameter", value = "Value")
+
+demographic_plot <- ggplot(demographic_long, aes(x = Value)) +
+  geom_density(fill = "steelblue", alpha = 0.7) +
+  facet_wrap(~ Parameter, scales = "free", ncol = 3) +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(),  # Remove Y-axis labels
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank()) +
+  labs(title = "Density Plots for Demographics")
+
+## 2️⃣ Confidence Limits
+confidence_params <- c("b_Low_Confidence_Limit", "b_High_Confidence_Limit")
+confidence_long <- posterior_df %>%
+  dplyr::select(all_of(confidence_params)) %>%
+  tidyr::gather(key = "Parameter", value = "Value")
+
+confidence_plot <- ggplot(confidence_long, aes(x = Value)) +
+  geom_density(fill = "steelblue", alpha = 0.7) +
+  facet_wrap(~ Parameter, scales = "free", ncol = 3) +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank()) +
+  labs(title = "Density Plots for Confidence Limits")
+
+## 3️⃣ Survey Responses
+survey_params <- grep("b_Q", names(posterior_df), value = TRUE)  # Selects all "b_Q*" variables
+survey_long <- posterior_df %>%
+  dplyr::select(all_of(survey_params)) %>%
+  tidyr::gather(key = "Parameter", value = "Value")
+
+survey_plot <- ggplot(survey_long, aes(x = Value)) +
+  geom_density(fill = "steelblue", alpha = 0.7) +
+  facet_wrap(~ Parameter, scales = "free", ncol = 3) +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank()) +
+  labs(title = "Density Plots for Survey Responses")
+
+# ------------------- DISPLAY ALL PLOTS -------------------
+print(demographic_plot)
+print(confidence_plot)
+print(survey_plot)
+
+```
+
+
+
+```{r}
+# Trace Plots for Each Group of model3
+
+# Demographics
+mcmc_trace(posterior_samples, pars = c("b_Age.years.", "b_Education", "b_Gender", "b_Income", "b_Race.Ethnicity"))
+
+# Confidence Limits
+mcmc_trace(posterior_samples, pars = c("b_Low_Confidence_Limit", "b_High_Confidence_Limit"))
+
+# Survey Responses
+mcmc_trace(posterior_samples, regex_pars = "b_Q")
+
+```
+
+```{r}
+#Visualize the posterior distributions of parameters
+mcmc_plot(model3, type = "dens_overlay")
+```
+
+```{r}
+## Conditional Effects plot
+
+# Plot marginal effects of predictors
+ce <- conditional_effects(model3, method = "posterior_epred")
+plot(ce, points = TRUE)
+
+```
+
+```{r}
+# Close all unused connections
+closeAllConnections()
+
+# Remove all objects
+rm(list = ls())  
+
+# Run garbage collection
+gc()
+```
+
+
+```{r}
+loo_model1 <- loo(model1, moment_match = TRUE, cores = 1)
+loo_model2 <- loo(model3, moment_match = TRUE, cores = 1)
+
+loo_compare(loo_model1, loo_model2)
+
+cat("[Info] Model comparison and validation steps completed successfully.\n")
+
+model1 <- load_or_recompile("fit_model1.rds")
+model3 <- load_or_recompile("hierarchical_model1.rds")
+
+```
+
+```{r}
+# Load necessary libraries
+library(rstan)
+
+# Optimize memory and enable cached compilation
+options(future.globals.maxSize = 5 * 1024^3)
+rstan_options(auto_write = TRUE)  
+options(mc.cores = parallel::detectCores())  
+
+# Function to properly reload and recompile a model
+reload_and_recompile_model <- function(model_path) {
+  if (file.exists(model_path)) {
+    message("Loading precompiled model from file...")
+    model <- readRDS(model_path)  
+  } else {
+    stop("Model file not found! Please refit and save.")
+  }
+
+  if (!brms::is.brmsfit(model)) {
+    stop("Loaded model is invalid! Please refit and save a correct model.")
+  }
+  
+  # Force recompilation to fix C++ model issues
+  model <- update(model, recompile = TRUE)  
+  return(model)
+}
+
+# Reload and fully recompile models
+model1 <- reload_and_recompile_model("fit_model1.rds")
+model3 <- reload_and_recompile_model("hierarchical_model1.rds")
+
+# Function to compute LOO with automatic issue handling
+compute_loo <- function(model, model_name) {
+  message(paste("Computing LOO for", model_name, "..."))
+
+  loo_result <- loo(model, cores = parallel::detectCores(), moment_match = TRUE)
+
+  if (any(loo_result$diagnostics$pareto_k > 0.7)) {
+    message(paste("High Pareto k detected in", model_name, "- Running reloo..."))
+    loo_result <- loo(model, cores = parallel::detectCores(), reloo = TRUE)
+  } else {
+    message(paste("LOO computed successfully for", model_name))
+  }
+
+  return(loo_result)
+}
+
+
+
+```
+
+```{r, warning=FALSE}
+# Compute LOO for both models
+loo_model1 <- compute_loo(model1, "Model 1")
+loo_model2 <- compute_loo(model3, "Model 2")
+
+# Compare models using LOO
+loo_comparison <- loo_compare(loo_model1, loo_model2)
+print(loo_comparison)
+
+cat("[Info] Model comparison and validation steps completed successfully.\n")
+```
+
+
+
+```{r, warning=FALSE}
+# Perform LOO-CV for both models
+options(mc.cores = 2)  
+
+loo_model1 <- loo(model1, moment_match = TRUE, cores = 2)
+loo_model2 <- loo(model3, moment_match = TRUE, cores = 2)
+
+
+# Compare LOO-CV scores
+loo_compare(loo_model1, loo_model2)
+
+cat("[Info] Model comparison and validation steps completed successfully.\n")
+```
+
+
+```{r}
+str(model1$data$obese)
+str(model3$data$obese)
+```
+
+```{r}
+###Density Overlay comparison
+
+# Extract posterior predictive distributions
+y_rep1 <- posterior_predict(model1)
+y_rep2 <- posterior_predict(model3)
+
+# Create a data frame for combined plot
+combined_data <- data.frame(
+  y = c(model1$data$obese, model3$data$obese),
+  model = rep(c("Model 1", "Model 2"), each = nrow(model1$data)),
+  y_rep_mean = c(apply(y_rep1, 2, mean), apply(y_rep2, 2, mean))
+)
+
+ggplot(combined_data, aes(x = y_rep_mean, fill = model, color = model)) +
+  geom_density(alpha = 0.3) +
+  labs(
+    title = "Density Overlay Comparison",
+    x = "Predicted Values",
+    y = "Density"
+  ) +
+  scale_fill_manual(values = c("blue", "red")) +
+  scale_color_manual(values = c("blue", "red")) +
+  theme_minimal()
+```
+
+```{r}
+###PPC: Bar plot comparison
+
+# Combine data for bar plots
+ppc_data <- data.frame(
+  y = c(model1$data$obese, model3$data$obese),
+  y_rep_mean = c(apply(y_rep1, 2, mean), apply(y_rep2, 2, mean)),
+  model = rep(c("Model 1", "Model 2"), each = nrow(model1$data))
+)
+
+# Create combined bar plot
+ggplot(ppc_data, aes(x = factor(y), y = y_rep_mean, fill = model)) +
+  geom_bar(stat = "identity", position = "dodge", alpha = 0.7) +
+  labs(
+    title = "Posterior Predictive Check: Bar Plot Comparison",
+    x = "Observed Response",
+    y = "Average Predicted Response"
+  ) +
+  scale_fill_manual(values = c("blue", "red")) +
+  theme_minimal()
+
+```
+
